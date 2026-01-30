@@ -3,43 +3,38 @@ import pandas as pd
 import pdfplumber
 import re
 import io
-from datetime import datetime
 
 # Configuração da página
-st.set_page_config(page_title="Conversor para Modelo Excel", page_icon="📊")
+st.set_page_config(page_title="Conversor Inteligente", page_icon="🧠")
 
-# Estilo do botão verde
+# Estilo do botão
 st.markdown("""
     <style>
     div.stDownloadButton > button:first-child {
-        background-color: #28a745;
-        color: white;
-        border-radius: 5px;
-        border: none;
-        padding: 5px 15px;
-        font-size: 14px;
-        font-weight: 500;
+        background-color: #28a745; color: white; border-radius: 5px; border: none; padding: 5px 15px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Gerador de Planilha Modelo")
+st.title("🧠 Robô com Memória Contábil")
 
-# Escolha do Robô
-tipo_robo = st.radio(
-    "Escolha o robô:",
-    ["Robô OFX", "Robô Excel (Modelo Sistema)"],
-    horizontal=True
-)
+# --- BANCO DE DADOS DE MEMÓRIA ---
+# Se for a primeira vez, cria a memória vazia
+if 'memoria_contas' not in st.session_state:
+    st.session_state.memoria_contas = {
+        "PIX RECEBIDO": "7001", # Exemplos que você pode mudar
+        "TARIFA BANCARIA": "8005",
+        "PAGAMENTO BOLETO": "1002"
+    }
 
-lista_bancos = ["Santander", "Sicoob", "Itaú", "Banco do Brasil", "Caixa", "Inter", "Mercado Pago", "Sicredi", "XP", "Nubank", "Outro"]
-banco = st.selectbox("Banco:", lista_bancos)
+with st.expander("📖 Ver/Editar Memória de Contas"):
+    st.write("Aqui o robô guarda o que aprendeu. Se o Histórico for igual, ele repete a Conta.")
+    st.json(st.session_state.memoria_contas)
 
 arquivo_pdf = st.file_uploader("Suba o PDF do extrato:", type="pdf")
 
 if arquivo_pdf is not None:
     transacoes = []
-    
     with pdfplumber.open(arquivo_pdf) as pdf:
         for pagina in pdf.pages:
             texto = pagina.extract_text()
@@ -52,53 +47,41 @@ if arquivo_pdf is not None:
                         data = tem_data.group(1)
                         valor_str = tem_valor.group(1)
                         v_num = float(valor_str.replace('.', '').replace(',', '.'))
-                        desc = linha.replace(data, '').replace(valor_str, '').strip()
+                        hist = linha.replace(data, '').replace(valor_str, '').strip()[:50]
                         
-                        # Lógica para o Fornecedor (Banco):
-                        # Se saiu dinheiro (< 0), é um CRÉDITO para o banco.
-                        # Se entrou dinheiro (> 0), é um DÉBITO para o banco.
+                        # LOGICA DE MEMÓRIA:
+                        # Se o histórico já existe na memória, ele usa. Se não, deixa vazio.
+                        conta_sugerida = st.session_state.memoria_contas.get(hist, "")
+                        
                         credito = abs(v_num) if v_num < 0 else 0
                         debito = v_num if v_num > 0 else 0
                         
                         transacoes.append({
                             "Data": data,
-                            "Histórico": desc[:50],
-                            "Documento": "", # Coluna Documento vazia como no modelo
+                            "Histórico": hist,
+                            "Conta Contábil": conta_sugerida,
+                            "Documento": "",
                             "Débito": debito,
-                            "Crédito": credito,
-                            "Valor_Original": v_num # Usado apenas para o OFX
+                            "Crédito": credito
                         })
 
     if transacoes:
-        st.info(f"Processado: {len(transacoes)} itens encontrados.")
+        df = pd.DataFrame(transacoes)
+        
+        st.write("### Ajuste as Contas na Tabela abaixo:")
+        # Tabela editável: você pode preencher a conta direto no site!
+        df_editado = st.data_editor(df, num_rows="dynamic")
 
-        if tipo_robo == "Robô OFX":
-            data_ofx = datetime.now().strftime('%Y%m%d')
-            ofx = "OFXHEADER:100\nDATA:OFXSGML\nVERSION:102\nENCODING:USASCII\nCHARSET:1252\n<OFX><BANKMSGSRSV1><STMTTRNRS><STMTRS><CURDEF>BRL</CURDEF><BANKTRANLIST>"
-            for t in transacoes:
-                ofx += f"<STMTTRN><TRNTYPE>OTHER</TRNTYPE><DTPOSTED>{data_ofx}</DTPOSTED><TRNAMT>{t['Valor_Original']}</TRNAMT><MEMO>{t['Histórico']}</MEMO></STMTTRN>"
-            ofx += "</BANKTRANLIST></STMTRS></STMTTRNRS></BANKMSGSRSV1></OFX>"
-            st.download_button("📥 Baixar OFX", ofx, f"extrato_{banco.lower()}.ofx")
+        # BOTÃO PARA APRENDER:
+        if st.button("💾 Ensinar ao Robô (Salvar Contas)"):
+            for _, linha in df_editado.iterrows():
+                if linha["Conta Contábil"]:
+                    st.session_state.memoria_contas[linha["Histórico"]] = linha["Conta Contábil"]
+            st.success("O robô aprendeu! Na próxima vez, ele preencherá essas contas sozinho.")
 
-        else:
-            # Monta exatamente no modelo enviado: Data, Histórico, Documento, Débito, Crédito
-            df_final = pd.DataFrame(transacoes)[["Data", "Histórico", "Documento", "Débito", "Crédito"]]
-            
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df_final.to_excel(writer, index=False, sheet_name='Extrato')
-            
-            st.write("### Prévia da Planilha:")
-            st.dataframe(df_final.head())
-            
-            st.download_button(
-                label="📥 Baixar Planilha Modelo",
-                data=output.getvalue(),
-                file_name=f"modelo_extrato_{banco.lower()}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-    else:
-        st.warning("Nenhum dado encontrado no arquivo.")
-
-st.divider()
-st.caption("Regra: Saída = Crédito (Banco) | Entrada = Débito (Banco)")
+        # Gerar Excel com o que foi editado
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_editado.to_excel(writer, index=False)
+        
+        st.download_button("📥 Baixar Planilha para Sistema", output.getvalue(), "extrato_contabil.xlsx")
